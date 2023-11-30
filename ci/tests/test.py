@@ -1,6 +1,8 @@
 
 import argparse
 import copy
+import http
+import logging
 import os
 import requests.adapters
 import ssl
@@ -12,6 +14,32 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 urllib3.disable_warnings()
+
+
+def init_logging(loglevel=None):
+    numeric_level = getattr(logging, loglevel.upper(), None)
+
+    if not isinstance(numeric_level, int):
+        raise ValueError('Invalid log level: %s' % loglevel)
+
+    logging.basicConfig()
+    logger = logging.getLogger().setLevel(numeric_level)
+
+    # something not right with urllib3 and propagation?
+    # prints duplicates, and prints a few debug lines when it shouldn't (eg NOTSET)
+    # unless overridden to INFO here (but maybe that's causing the dupes?)
+
+    urllib3_log = logging.getLogger("urllib3.connectionpool")
+    urllib3_log.setLevel(logging.INFO)
+    urllib3_log.propagate = True
+
+    requests_log = logging.getLogger("requests.packages.urllib3")
+    requests_log.setLevel(numeric_level)
+    requests_log.propagate = True
+
+    logger.debug("numeric log level: {}".format(numeric_level))
+    http.client.HTTPConnection.debuglevel = numeric_level
+    return logger
 
 
 class CITestsHandler:
@@ -41,7 +69,8 @@ class CITestsHandler:
         self._session.mount('https://', TransportAdapter(ctx))
 
     def run(self, start: Optional[bool] = False, end: Optional[bool] = False,
-            command: Optional[str] = None, **kwargs: Any) -> None:
+            command: Optional[str] = None,
+            loglevel: Optional[str] = None, **kwargs: Any) -> None:
         assert ismuex(start, end, command), 'Arguments are mutually exclusive'
 
         record = copy.deepcopy(self.record)
@@ -98,7 +127,8 @@ class CITestsHandler:
         else:
             raise RuntimeError('No viable option called, exiting...')
 
-        self._session.post(self.dashboard_url, json=record, verify=False)
+        response = self._session.post(self.dashboard_url, json=record, verify=False)
+        logger.debug('response body({})'.format(response.text))
 
     @staticmethod
     def execute_test(command: str) -> Tuple[Dict, str]:
@@ -169,6 +199,10 @@ def get_args():
         '--stdout', action='store_true', default=False,
         help='Add STDOUT of the test run to the result')
 
+    parser.add_argument(
+        '-l', '--log', action='store', type=str.upper, default="NOTSET",
+        help='Log level: NOTSET(default), DEBUG, INFO, WARNING, ERROR, CRITICAL')
+
     return parser.parse_args()
 
 
@@ -195,9 +229,11 @@ class TransportAdapter(requests.adapters.HTTPAdapter):
 
 if __name__ == '__main__':
     args = get_args()
+    logger = init_logging(args.log)
     CITestsHandler().run(start=args.start,
                          end=args.end,
                          command=args.command,
+                         loglevel=args.log,
                          **{'name': args.name,
                             'stdout': args.stdout})
 
